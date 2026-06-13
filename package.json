@@ -1,0 +1,19 @@
+{
+  "name": "weagent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code Windows client with WeChat remote control",
+  "scripts": {
+    "dev": "pnpm --filter @weagent/desktop dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "dist": "pnpm build && pnpm --filter @weagent/desktop dist",
+    "postinstall": "pnpm rebuild better-sqlite3 electron esbuild"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron", "better-sqlite3", "esbuild"]
+  }
+}

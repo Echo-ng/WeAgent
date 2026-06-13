@@ -1,0 +1,74 @@
+{
+  "name": "@weagent/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "dist": "pnpm build && electron-builder"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+    "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@weagent/channels-wechat": "workspace:*",
+    "@weagent/core": "workspace:*",
+    "@weagent/mcp-weagent": "workspace:*",
+    "@weagent/shared": "workspace:*",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "electron-rebuild": "^3.2.9",
+    "electron-vite": "^2.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.3",
+    "vite": "^5.4.11",
+    "zustand": "^5.0.3"
+  },
+  "build": {
+    "appId": "com.weagent.desktop",
+    "productName": "WeAgent",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "resources/icon.ico",
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "WeAgent"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "node_modules/better-sqlite3/**/*"
+    ]
+  }
+}

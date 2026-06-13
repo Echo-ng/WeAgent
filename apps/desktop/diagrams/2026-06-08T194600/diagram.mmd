@@ -1,0 +1,54 @@
+flowchart TD
+    subgraph L1["接入层"]
+        A1["评测任务提交"]
+        A2["API接口"]
+        A3["Web控制台"]
+    end
+
+    subgraph L2["调度层"]
+        B1["任务队列"]
+        B2["评测编排引擎"]
+        B3["资源分配器"]
+    end
+
+    subgraph L3["执行层"]
+        C1["评测引擎"]
+        C2["指标计算"]
+        C3["模型调用"]
+    end
+
+    subgraph L4["数据层"]
+        D1["评测数据集"]
+        D2["结果存储"]
+        D3["标注管理"]
+    end
+
+    subgraph L5["展示层"]
+        E1["评测报告"]
+        E2["可视化看板"]
+        E3["对比分析"]
+    end
+
+    A2 -->|提交任务| B1
+    A2 -->|触发编排| B2
+    B1 -->|消费任务| C1
+    B2 -->|调度执行| C1
+    B2 -->|触发计算| C2
+    C1 -->|写入结果| D2
+    C2 -->|存储指标| D2
+    C3 -->|读写数据| D1
+    D2 -->|生成报告| E1
+    D2 -->|推送数据| E2
+    D2 -->|查询对比| E3
+
+    classDef layer1 fill:#4A90D9,color:#fff,stroke:#2E6AB0
+    classDef layer2 fill:#50C878,color:#fff,stroke:#2E8B57
+    classDef layer3 fill:#F5A623,color:#fff,stroke:#D4891A
+    classDef layer4 fill:#9B59B6,color:#fff,stroke:#7D3C98
+    classDef layer5 fill:#E74C3C,color:#fff,stroke:#C0392B
+
+    class A1,A2,A3 layer1
+    class B1,B2,B3 layer2
+    class C1,C2,C3 layer3
+    class D1,D2,D3 layer4
+    class E1,E2,E3 layer5
