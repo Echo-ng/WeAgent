@@ -19,8 +19,14 @@ export interface ClaudeBridgeOptions {
   bareMode?: boolean;
   /** 设置来源，非 bare 时加载 user/project/local 以启用 ~/.claude/skills */
   settingSources?: string;
-  /** CLI 权限模式，默认 acceptEdits（配合 allowed-tools 白名单） */
-  permissionMode?: 'dontAsk' | 'acceptEdits' | 'default';
+  /** CLI 权限模式。WeAgent 以 headless --print 调用，须用 bypassPermissions 才能执行 Bash/Write */
+  permissionMode?:
+    | 'bypassPermissions'
+    | 'acceptEdits'
+    | 'auto'
+    | 'default'
+    | 'dontAsk'
+    | 'plan';
   /** 本地图片绝对路径，经 stream-json 多模态输入传给 Claude */
   images?: string[];
 }

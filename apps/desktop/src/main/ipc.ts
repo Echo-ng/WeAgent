@@ -121,6 +121,20 @@ export function registerIpcHandlers(
     },
   );
 
+  ipcMain.handle('conversations:cancel', (_e, conversationId: string) => {
+    const ok = appService.cancelConversation(conversationId);
+    if (ok) {
+      getWindow()?.webContents.send('stream:event', {
+        type: 'status',
+        conversationId,
+        content: '正在停止…',
+        metadata: { kind: 'turn_cancelling' },
+        timestamp: Date.now(),
+      });
+    }
+    return { ok };
+  });
+
   ipcMain.handle(
     'attachments:saveImage',
     (_e, conversationId: string, input: SaveImageAttachmentInput) =>

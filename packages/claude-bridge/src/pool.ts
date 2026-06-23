@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, exec, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -14,10 +14,49 @@ import { ConversationMutex } from './conversation-mutex.js';
 
 const READ_ONLY_TOOLS = ['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch'];
 
+interface ActiveRun {
+  proc: ChildProcess;
+  aborted: boolean;
+}
+
+function killProcessTree(proc: ChildProcess): void {
+  if (!proc.pid) {
+    try {
+      proc.kill();
+    } catch {
+      // ignore
+    }
+    return;
+  }
+  if (process.platform === 'win32') {
+    exec(`taskkill /PID ${proc.pid} /T /F`, { windowsHide: true }, () => {
+      try {
+        proc.kill();
+      } catch {
+        // ignore
+      }
+    });
+  } else {
+    try {
+      proc.kill('SIGTERM');
+    } catch {
+      // ignore
+    }
+    setTimeout(() => {
+      try {
+        if (!proc.killed) proc.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+    }, 2000);
+  }
+}
+
 export class ClaudeSessionPool {
   private sessions = new Map<string, ClaudeSessionHandle>();
   private approvalHandler?: ToolApprovalHandler;
   private conversationMutex = new ConversationMutex();
+  private activeRuns = new Map<string, ActiveRun>();
 
   setApprovalHandler(handler: ToolApprovalHandler): void {
     this.approvalHandler = handler;
@@ -40,6 +79,18 @@ export class ClaudeSessionPool {
 
   remove(sessionId: string): void {
     this.sessions.delete(sessionId);
+  }
+
+  isQueryRunning(sessionId: string): boolean {
+    return this.activeRuns.has(sessionId);
+  }
+
+  cancelQuery(sessionId: string): boolean {
+    const active = this.activeRuns.get(sessionId);
+    if (!active) return false;
+    active.aborted = true;
+    killProcessTree(active.proc);
+    return true;
   }
 
   async *runQuery(
@@ -84,8 +135,14 @@ export class ClaudeSessionPool {
         let assistantText = '';
         let sessionNotFound = false;
         let sessionAlreadyInUse = false;
+        let cancelled = false;
 
         for await (const chunk of this.spawnStream(effectivePrompt, args, options)) {
+          if (chunk.metadata?.cancelled) {
+            cancelled = true;
+            yield chunk;
+            break;
+          }
           if (chunk.metadata?.sessionNotFound) {
             sessionNotFound = true;
             break;
@@ -123,6 +180,8 @@ export class ClaudeSessionPool {
           }
           yield chunk;
         }
+
+        if (cancelled) break;
 
         if (sessionAlreadyInUse && !resumeSession) {
           resumeSession = true;
@@ -312,6 +371,12 @@ export class ClaudeSessionPool {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
+    const active: ActiveRun = { proc, aborted: false };
+    this.activeRuns.set(sessionId, active);
+    const clearActive = () => {
+      this.activeRuns.delete(sessionId);
+    };
+
     if (proc.stdin) {
       const stdinPayload =
         images.length > 0
@@ -385,10 +450,14 @@ export class ClaudeSessionPool {
     proc.on('close', (code) => {
       exitCode = code ?? 0;
       done = true;
+      clearActive();
       if (resolveLine) {
         resolveLine(null);
         resolveLine = null;
       }
+    });
+    proc.on('error', () => {
+      clearActive();
     });
 
     while (!done || lineQueue.length > 0 || buffer) {
@@ -458,6 +527,17 @@ export class ClaudeSessionPool {
           timestamp: Date.now(),
         };
       }
+    }
+
+    if (active.aborted) {
+      yield {
+        type: 'error',
+        conversationId: sessionId,
+        content: '已停止生成',
+        metadata: { cancelled: true },
+        timestamp: Date.now(),
+      };
+      return;
     }
 
     if (exitCode !== null && exitCode !== 0 && !gotContent) {

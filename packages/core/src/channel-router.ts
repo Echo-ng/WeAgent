@@ -53,12 +53,25 @@ export class ChannelRouter {
   }
 
   async handleWeChatMessage(msg: WeChatIncomingMessage): Promise<void> {
-    const commandResponse = this.handleCommand(msg);
-    if (commandResponse !== null) {
+    const commandResult = this.handleCommand(msg);
+    if (commandResult !== null) {
       const adapter = this.adapters.get('wechat');
       if (!adapter) return;
-      for (const chunk of splitWeChatText(commandResponse)) {
+      for (const chunk of splitWeChatText(commandResult.text)) {
         await adapter.sendMessage(msg.fromUserId, chunk, msg.contextToken);
+      }
+      if (commandResult.conversationId) {
+        this.onEvent?.({
+          type: 'conversation_updated',
+          conversationId: commandResult.conversationId,
+          content: msg.text,
+          metadata: {
+            channel: 'wechat',
+            peerId: msg.fromUserId,
+            kind: commandResult.kind,
+          },
+          timestamp: Date.now(),
+        });
       }
       return;
     }
@@ -205,6 +218,14 @@ export class ChannelRouter {
       lastError = fallbackError;
     }
 
+    this.onEvent?.({
+      type: 'conversation_updated',
+      conversationId,
+      content: reply || lastError || '',
+      metadata: { ...extraMeta, channel },
+      timestamp: Date.now(),
+    });
+
     return { lastError, reply };
   }
 
@@ -343,7 +364,7 @@ export class ChannelRouter {
     return events;
   }
 
-  private handleCommand(msg: WeChatIncomingMessage): string | null {
+  private handleCommand(msg: WeChatIncomingMessage): WeChatCommandResult | null {
     const text = msg.text.trim();
     const peerId = msg.fromUserId;
 
@@ -356,15 +377,21 @@ export class ChannelRouter {
       });
       this.sessionManager.switchConversation('wechat', peerId, conv.id);
       this.orchestrator.resetClaudeSession(conv.id);
-      return `已创建新对话：${conv.id.slice(0, 8)}`;
+      return {
+        text: `已创建新对话：${conv.id.slice(0, 8)}`,
+        conversationId: conv.id,
+        kind: 'wechat_new',
+      };
     }
 
     if (text === '/list') {
       const convs = this.sessionManager.listConversations(10);
-      if (convs.length === 0) return '暂无对话';
-      return convs
-        .map((c) => `${c.id.slice(0, 8)} - ${c.title} (${c.channel})`)
-        .join('\n');
+      if (convs.length === 0) return { text: '暂无对话' };
+      return {
+        text: convs
+          .map((c) => `${c.id.slice(0, 8)} - ${c.title} (${c.channel})`)
+          .join('\n'),
+      };
     }
 
     if (text.startsWith('/switch ')) {
@@ -372,9 +399,13 @@ export class ChannelRouter {
       const conv = this.sessionManager
         .listConversations(50)
         .find((c) => c.id.startsWith(idPrefix));
-      if (!conv) return `未找到对话：${idPrefix}`;
+      if (!conv) return { text: `未找到对话：${idPrefix}` };
       this.sessionManager.switchConversation('wechat', peerId, conv.id);
-      return `已切换到：${conv.title} (${conv.id.slice(0, 8)})`;
+      return {
+        text: `已切换到：${conv.title} (${conv.id.slice(0, 8)})`,
+        conversationId: conv.id,
+        kind: 'wechat_switch',
+      };
     }
 
     if (text.startsWith('/agent ')) {
@@ -384,11 +415,15 @@ export class ChannelRouter {
         this.agentRegistry.list().find((a) => a.name.includes(agentName));
       if (!agent) {
         const list = this.agentRegistry.list().map((a) => a.id).join(', ');
-        return `未找到 Agent。可用：${list}`;
+        return { text: `未找到 Agent。可用：${list}` };
       }
       const conv = this.sessionManager.getOrCreateForChannel('wechat', peerId, this.defaultCwd);
       this.sessionManager.updateConversation(conv.id, { activeAgentId: agent.id });
-      return `已切换 Agent：${agent.name} (${agent.id})`;
+      return {
+        text: `已切换 Agent：${agent.name} (${agent.id})`,
+        conversationId: conv.id,
+        kind: 'wechat_agent',
+      };
     }
 
     if (text === '/status') {
@@ -397,14 +432,22 @@ export class ChannelRouter {
         ? this.agentRegistry.get(conv.activeAgentId)
         : undefined;
       const config = this.orchestrator.getConfig();
-      return [
-        `对话：${conv.title} (${conv.id.slice(0, 8)})`,
-        `工作区：${conv.cwd || this.defaultCwd || '未设置'}`,
-        `Agent：${agent?.name ?? config.defaultAgentId}`,
-        `协作模式：${config.mode}`,
-      ].join('\n');
+      return {
+        text: [
+          `对话：${conv.title} (${conv.id.slice(0, 8)})`,
+          `工作区：${conv.cwd || this.defaultCwd || '未设置'}`,
+          `Agent：${agent?.name ?? config.defaultAgentId}`,
+          `协作模式：${config.mode}`,
+        ].join('\n'),
+      };
     }
 
     return null;
   }
+}
+
+interface WeChatCommandResult {
+  text: string;
+  conversationId?: string;
+  kind?: 'wechat_new' | 'wechat_switch' | 'wechat_agent';
 }

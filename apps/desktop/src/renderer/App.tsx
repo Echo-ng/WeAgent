@@ -36,7 +36,7 @@ const PAGE_META: Record<Page, { title: string; desc?: string }> = {
   orchestrator: { title: '协作编排', desc: 'Router / Pipeline / Parallel 多 Agent 协作' },
   tasks: { title: '定时任务', desc: '按日程自动执行 Claude 任务，如盘前策略、收盘复盘' },
   channels: { title: '渠道', desc: '微信 iLink / ClawBot 远程接入' },
-  approvals: { title: '审批队列', desc: '远程触发的敏感工具操作' },
+  approvals: { title: '审批队列', desc: '微信远程写操作二次确认（不含本地 Bash）' },
   settings: { title: '设置', desc: 'Claude Code 与工作区配置' },
 };
 
@@ -130,6 +130,14 @@ export default function App() {
       }
       if (event.type === 'conversation_updated') {
         void window.weagent.listConversations().then(setConversations);
+        const kind = event.metadata?.kind;
+        if (
+          (kind === 'wechat_new' || kind === 'wechat_switch') &&
+          event.conversationId
+        ) {
+          setFocusConversationId(event.conversationId);
+          setPage('chat');
+        }
       }
       if (
         event.metadata?.kind === 'task_completed' ||

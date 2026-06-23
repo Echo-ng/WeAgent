@@ -30,13 +30,14 @@ export interface WeAgentAPI {
   setScheduledTaskEnabled: (taskId: string, enabled: boolean) => Promise<ScheduledTask | null>;
   runScheduledTaskNow: (taskId: string) => Promise<ScheduledTaskRun | null>;
   listScheduledTaskRuns: (taskId: string, limit?: number) => Promise<ScheduledTaskRun[]>;
-  syncClaudeScheduledTasks: () => Promise<{ imported: number; updated: number; files: string[] }>;
+  syncClaudeScheduledTasks: () => Promise<{ imported: number; updated: number; removed: number; files: string[] }>;
   getMessages: (conversationId: string, options?: GetMessagesOptions) => Promise<GetMessagesResult>;
   sendMessage: (
     conversationId: string,
     text: string,
     opts?: SendMessageOptions,
   ) => Promise<GetMessagesResult>;
+  cancelConversation: (conversationId: string) => Promise<{ ok: boolean }>;
   saveImageAttachment: (
     conversationId: string,
     input: SaveImageAttachmentInput,
@@ -82,6 +83,7 @@ const api: WeAgentAPI = {
   syncClaudeScheduledTasks: () => ipcRenderer.invoke('tasks:syncClaude'),
   getMessages: (id, options) => ipcRenderer.invoke('conversations:messages', id, options),
   sendMessage: (id, text, opts) => ipcRenderer.invoke('conversations:send', id, text, opts),
+  cancelConversation: (id) => ipcRenderer.invoke('conversations:cancel', id),
   saveImageAttachment: (id, input) => ipcRenderer.invoke('attachments:saveImage', id, input),
   readAttachmentImage: (filePath) => ipcRenderer.invoke('attachments:readImage', filePath),
   listAgents: () => ipcRenderer.invoke('agents:list'),

@@ -7,7 +7,7 @@ import {
   mergeStreamText,
   modelSupportsVision,
 } from '@weagent/shared';
-import { IconPlus, IconSend, IconSpark, IconTrash } from '../components/Icons';
+import { IconPlus, IconSend, IconSpark, IconStop, IconTrash } from '../components/Icons';
 import { TracePanel, type TraceEntry } from '../components/TracePanel';
 import { TaskPlanCard, extractTodoPlan, extractTurnIssues, type TodoPlanItem } from '../components/TaskPlanCard';
 import { MarkdownContent } from '../components/MarkdownContent';
@@ -252,6 +252,7 @@ export function ChatPage({
   } = useMessageThread();
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [liveTrace, setLiveTrace] = useState<TraceEntry[]>([]);
@@ -280,14 +281,22 @@ export function ChatPage({
   });
 
   useEffect(() => {
-    if (focusConversationId) {
-      setActiveId(focusConversationId);
-      onFocusHandled?.();
+    if (!focusConversationId) return;
+    const conv = conversations.find((c) => c.id === focusConversationId);
+    if (conv?.channel === 'wechat') {
+      setChannelFilter('wechat');
     }
-  }, [focusConversationId, onFocusHandled]);
+    setActiveId(focusConversationId);
+    onFocusHandled?.();
+  }, [focusConversationId, conversations, onFocusHandled]);
 
   useEffect(() => {
     if (filteredConversations.length === 0) {
+      const activeInAll = Boolean(activeId && conversations.some((c) => c.id === activeId));
+      if (activeInAll) {
+        setChannelFilter('all');
+        return;
+      }
       if (activeId) {
         setActiveId(null);
         clear();
@@ -295,9 +304,14 @@ export function ChatPage({
       return;
     }
     if (!activeId || !filteredConversations.some((c) => c.id === activeId)) {
+      const activeInAll = Boolean(activeId && conversations.some((c) => c.id === activeId));
+      if (activeInAll) {
+        setChannelFilter('all');
+        return;
+      }
       setActiveId(filteredConversations[0].id);
     }
-  }, [filteredConversations, activeId, clear]);
+  }, [filteredConversations, activeId, clear, conversations]);
 
   useEffect(() => {
     if (!activeId) return;
@@ -314,8 +328,15 @@ export function ChatPage({
 
   useEffect(() => {
     if (!activeId) return;
-    for (const e of streamEvents) {
-      if (e.type === 'conversation_updated' && e.conversationId === activeId) {
+    const shouldRefresh = (e: StreamEvent) =>
+      e.conversationId === activeId &&
+      (e.type === 'conversation_updated' ||
+        e.type === 'done' ||
+        e.metadata?.kind === 'task_completed' ||
+        e.metadata?.kind === 'task_failed');
+
+    for (let i = streamEvents.length - 1; i >= 0; i--) {
+      if (shouldRefresh(streamEvents[i])) {
         invalidate(activeId);
         void loadThread(activeId, { force: true });
         break;
@@ -469,6 +490,30 @@ export function ChatPage({
 
   const removePendingAttachment = (id: string) => {
     setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
+  };
+
+  const stopSending = async () => {
+    const convId = activeSendConvIdRef.current;
+    if (!convId || !sending || stopping) return;
+    setStopping(true);
+    try {
+      await window.weagent.cancelConversation(convId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          conversationId: convId,
+          role: 'assistant',
+          content: `停止失败：${message}`,
+          contentType: 'error',
+          createdAt: Date.now(),
+        },
+      ]);
+    } finally {
+      setStopping(false);
+    }
   };
 
   const send = async (textOverride?: string) => {
@@ -762,22 +807,27 @@ export function ChatPage({
               rows={1}
             />
             <button
-              className="send-btn icon-btn terminal-send"
-              onClick={() => void send()}
+              className={`send-btn icon-btn terminal-send${isActiveConvSending ? ' is-stop' : ''}`}
+              onClick={() => void (isActiveConvSending ? stopSending() : send())}
               disabled={
-                (!input.trim() && pendingAttachments.length === 0) || sending || initializing
+                isActiveConvSending
+                  ? stopping || initializing
+                  : (!input.trim() && pendingAttachments.length === 0) || sending || initializing
               }
-              title="发送"
+              title={isActiveConvSending ? '停止生成' : '发送'}
             >
-              <IconSend />
+              {isActiveConvSending ? <IconStop /> : <IconSend />}
             </button>
           </div>
           <div className={`chat-input-hint${isActiveConvSending ? ' is-busy' : ''}`}>
             {isActiveConvSending ? (
               <>
                 <span className="activity-pulse activity-pulse-sm" aria-hidden />
-                正在等待回复 · 已用时 {elapsedSec}s
-                {liveTurn.phase === 'approval' && ' · 可在右侧 Trace 或审批页处理'}
+                {stopping ? '正在停止…' : `正在等待回复 · 已用时 ${elapsedSec}s`}
+                {!stopping && ' · 点击右侧按钮停止'}
+                {liveTurn.phase === 'approval' &&
+                  activeConv?.channel === 'wechat' &&
+                  ' · 敏感工具操作可在「审批队列」处理'}
               </>
             ) : (
               'Enter 发送 · Shift+Enter 换行 · 可粘贴图片（PNG/JPG/WebP，单张 ≤4MB）'

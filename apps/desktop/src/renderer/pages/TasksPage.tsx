@@ -21,14 +21,15 @@ function conversationLabel(conv: Conversation): string {
   return `${conv.title}（${channel}）`;
 }
 
-function formatSyncBanner(result: { imported: number; updated: number; files: string[] }): string {
+function formatSyncBanner(result: { imported: number; updated: number; removed: number; files: string[] }): string {
   const parts: string[] = [];
   if (result.imported > 0) parts.push(`新导入 ${result.imported} 个`);
   if (result.updated > 0) parts.push(`更新 ${result.updated} 个`);
+  if (result.removed > 0) parts.push(`Claude 已删除 ${result.removed} 个（WeAgent 已停用）`);
   if (result.files.length > 0) {
     parts.push(`扫描 ${result.files.length} 个 Claude 任务文件`);
   } else {
-    parts.push('未找到 .claude/scheduled_tasks.json');
+    parts.push('未找到 .claude/scheduled_tasks.json（请确认 defaultCwd 或 Claude 使用了 durable 定时任务）');
   }
   return parts.join(' · ');
 }
@@ -399,8 +400,9 @@ export function TasksPage({ tasks, agents, settings, conversations, onRefresh, o
           </button>
         </div>
         <p className="tasks-toolbar-hint">
-          在「对话」中创建定时任务即可（Claude 内置 CronCreate 或 weagent MCP 均可），WeAgent 会自动与
-          <code>.claude/scheduled_tasks.json</code> 保持同步，并在此页统一展示与调度。
+          与 Claude Code 同步的是写入 <code>.claude/scheduled_tasks.json</code> 的 durable 定时任务（创建时需明确要求「持久化/每天重复」）。
+          请在「设置」中配置工作区 defaultCwd 为 Claude 项目根目录；WeAgent 也会扫描各会话 cwd。
+          本页保存的 Cron/每日任务会回写该文件，并由 WeAgent 统一调度。
         </p>
         {syncBanner && !loading && (
           <p className="tasks-sync-banner">{syncBanner}</p>

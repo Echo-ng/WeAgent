@@ -145,6 +145,8 @@ export interface AppSettings {
   wechatBaseUrl: string;
   /** 登录后自动开始微信消息监听（主进程持久运行） */
   wechatAutoListen: boolean;
+  /** 额外扫描 Claude Code scheduled_tasks.json 的项目根目录 */
+  taskSearchDirs?: string[];
   /**
    * Claude CLI 精简模式（--bare）：跳过 hooks、插件同步等，但无法加载 ~/.claude/skills 等全局 Skill。
    * 默认 false，以使用本机已安装的 Skill（如 a-stock-data、飞书 skill）。

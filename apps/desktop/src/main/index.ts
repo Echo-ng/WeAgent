@@ -109,6 +109,7 @@ function createTray(): void {
 
 function resolveTaskSearchDirs(): string[] {
   const candidates = [
+    process.cwd(),
     join(__dirname, '../..'),
     join(__dirname, '../../..'),
   ];

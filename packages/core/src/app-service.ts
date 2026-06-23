@@ -24,10 +24,13 @@ import { SessionManager } from './session-manager.js';
 import { TaskScheduler } from './task-scheduler.js';
 import { writeWeAgentMcpConfig } from './mcp-config.js';
 import { TaskApiServer } from './task-api-server.js';
-import { findScheduledTask, requestScheduledTaskRun } from './scheduled-task-api.js';
+import { findScheduledTask, requestScheduledTaskRun, saveScheduledTaskRecord } from './scheduled-task-api.js';
 import {
   ClaudeTaskFileWatcher,
+  removeWeAgentTaskFromClaudeFile,
   syncClaudeScheduledTasks,
+  taskToClaudeCron,
+  upsertWeAgentTaskInClaudeFile,
   type ClaudeTaskSyncResult,
 } from './claude-task-sync.js';
 import { AttachmentStore } from './attachment-store.js';
@@ -132,6 +135,10 @@ export class AppService {
     }
 
     this.syncClaudeNativeTasks();
+    this.restartTaskWatcher();
+  }
+
+  private restartTaskWatcher(): void {
     this.claudeTaskWatcher.start(this.getTaskSearchDirs(), () => {
       this.scheduleClaudeNativeSync();
     });
@@ -146,13 +153,24 @@ export class AppService {
   }
 
   getTaskSearchDirs(): string[] {
-    const dirs = [this.settings.defaultCwd, this.dataDir, ...this.extraTaskSearchDirs];
+    const dirs = [
+      this.settings.defaultCwd,
+      this.dataDir,
+      ...this.extraTaskSearchDirs,
+      ...(this.settings.taskSearchDirs ?? []),
+    ];
+    for (const conv of this.sessionManager.listConversations(200)) {
+      if (conv.cwd?.trim()) dirs.push(conv.cwd);
+    }
+    for (const task of this.db.listScheduledTasks()) {
+      if (task.cwd?.trim()) dirs.push(task.cwd);
+    }
     return [...new Set(dirs.filter((d) => d?.trim()))];
   }
 
   syncClaudeNativeTasks(): ClaudeTaskSyncResult {
     const result = syncClaudeScheduledTasks(this.db, this.getTaskSearchDirs());
-    if (result.imported > 0 || result.updated > 0) {
+    if (result.imported > 0 || result.updated > 0 || result.removed > 0) {
       this.eventBus.emit({
         type: 'conversation_updated',
         conversationId: 'scheduled-tasks',
@@ -178,6 +196,10 @@ export class AppService {
     this.channelRouter.setDefaultCwd(this.settings.defaultCwd);
     this.orchestrator.setClaudePath(this.settings.claudePath);
     this.orchestrator.setClaudeBareMode(this.settings.claudeBareMode ?? false);
+    if (patch.defaultCwd !== undefined || patch.taskSearchDirs !== undefined) {
+      this.syncClaudeNativeTasks();
+      this.restartTaskWatcher();
+    }
     return this.getSettings();
   }
 
@@ -235,15 +257,67 @@ export class AppService {
   }
 
   saveScheduledTask(input: ScheduledTaskInput): ScheduledTask {
-    return this.taskScheduler.saveTask(input);
+    const cwd = input.cwd?.trim() || this.settings.defaultCwd?.trim();
+    let task = this.taskScheduler.saveTask({ ...input, cwd: cwd || input.cwd });
+    const taskCwd = task.cwd?.trim() || this.settings.defaultCwd?.trim();
+    if (!task.enabled && task.claudeNativeId && taskCwd) {
+      removeWeAgentTaskFromClaudeFile(taskCwd, task.claudeNativeId);
+    } else {
+      task = this.exportTaskToClaudeFile(task) ?? task;
+    }
+    this.restartTaskWatcher();
+    return task;
   }
 
   deleteScheduledTask(id: string): boolean {
-    return this.taskScheduler.deleteTask(id);
+    const task = this.db.getScheduledTask(id);
+    const ok = this.taskScheduler.deleteTask(id);
+    if (ok && task?.claudeNativeId && task.cwd?.trim()) {
+      removeWeAgentTaskFromClaudeFile(task.cwd.trim(), task.claudeNativeId);
+    }
+    if (ok) this.restartTaskWatcher();
+    return ok;
   }
 
   setScheduledTaskEnabled(id: string, enabled: boolean): ScheduledTask | null {
-    return this.taskScheduler.setEnabled(id, enabled);
+    const task = this.taskScheduler.setEnabled(id, enabled);
+    if (!task) return null;
+    if (enabled) {
+      return this.exportTaskToClaudeFile(task) ?? task;
+    }
+    if (task.claudeNativeId && task.cwd?.trim()) {
+      removeWeAgentTaskFromClaudeFile(task.cwd.trim(), task.claudeNativeId);
+    }
+    this.restartTaskWatcher();
+    return task;
+  }
+
+  private exportTaskToClaudeFile(task: ScheduledTask): ScheduledTask | null {
+    const cwd = task.cwd?.trim() || this.settings.defaultCwd?.trim();
+    if (!cwd || !task.enabled || !taskToClaudeCron(task)) return null;
+
+    const nativeId = upsertWeAgentTaskInClaudeFile(task, cwd);
+    if (!nativeId || nativeId === task.claudeNativeId) return null;
+
+    return saveScheduledTaskRecord(
+      this.db,
+      {
+        id: task.id,
+        name: task.name,
+        enabled: task.enabled,
+        scheduleKind: task.scheduleKind,
+        cronExpression: task.cronExpression,
+        dailyTime: task.dailyTime,
+        intervalMs: task.intervalMs,
+        prompt: task.prompt,
+        conversationId: task.conversationId,
+        agentId: task.agentId,
+        cwd: task.cwd ?? cwd,
+        claudeNativeId: nativeId,
+        createdAt: task.createdAt,
+      },
+      task,
+    );
   }
 
   runScheduledTaskNow(id: string): Promise<ScheduledTaskRun | null> {
@@ -277,6 +351,14 @@ export class AppService {
     opts?: { attachments?: SavedImageAttachment[] },
   ): Promise<StreamEvent[]> {
     return this.channelRouter.handleLocalMessage(conversationId, text, opts);
+  }
+
+  cancelConversation(conversationId: string): boolean {
+    return this.orchestrator.cancelConversation(conversationId);
+  }
+
+  isConversationRunning(conversationId: string): boolean {
+    return this.orchestrator.isConversationRunning(conversationId);
   }
 
   listAgents(): AgentConfig[] {

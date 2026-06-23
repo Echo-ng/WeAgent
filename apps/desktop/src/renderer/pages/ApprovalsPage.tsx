@@ -11,7 +11,7 @@ export function ApprovalsPage({ approvals, onResolve }: Props) {
       <div className="empty-state">
         <p>暂无待审批的工具请求</p>
         <p style={{ fontSize: 13, marginTop: 8 }}>
-          微信远程触发的 Write/Edit/Bash 操作会出现在这里
+          仅用于微信远程通道中 Write/Edit 等写操作的二次确认。本地对话与 Bash 命令不走此队列。
         </p>
       </div>
     );

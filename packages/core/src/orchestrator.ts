@@ -145,6 +145,14 @@ export class MultiAgentOrchestrator {
     this.sessionManager.updateConversation(conversationId, { claudeSessionReady: false });
   }
 
+  cancelConversation(conversationId: string): boolean {
+    return this.claudePool.cancelQuery(conversationId);
+  }
+
+  isConversationRunning(conversationId: string): boolean {
+    return this.claudePool.isQueryRunning(conversationId);
+  }
+
   private setupApprovalHandler(): void {
     const handler: ToolApprovalHandler = async (request) => {
       if (request.channel === 'local') {
@@ -416,6 +424,8 @@ export class MultiAgentOrchestrator {
       maxTurns: agent.maxTurns,
       claudePath: this.claudePath,
       images: imagePaths.length > 0 ? imagePaths : undefined,
+      // dontAsk = 未预批准则静默拒绝；headless 嵌入须 bypassPermissions
+      permissionMode: 'bypassPermissions',
     };
 
     let accumulatedText = '';
@@ -431,9 +441,12 @@ export class MultiAgentOrchestrator {
         accumulatedText = mergeStreamText(accumulatedText, event.content);
       }
       if (event.type === 'tool_result' && event.metadata?.isError && event.content) {
+        const detail = event.content.replace(/^✗\s*/, '').trim();
+        if (/requires approval|需要审批|permission denied|awaiting approval|don't ask mode|dontAsk|权限系统/i.test(detail)) {
+          continue;
+        }
         const name = String(event.metadata?.toolName ?? '工具');
-        const detail = event.content.replace(/^✗\s*/, '').trim().slice(0, 200);
-        stepFailures.push(`${name}：${detail}`);
+        stepFailures.push(`${name}：${detail.slice(0, 200)}`);
       }
       if (event.type === 'error' && !event.metadata?.sessionNotFound) {
         lastError = event.content ?? '';

@@ -1583,6 +1583,21 @@ input:disabled, textarea:disabled {
   flex-shrink: 0;
 }
 
+.terminal-send.is-stop {
+  background: rgba(239, 68, 68, 0.14) !important;
+  color: #f87171 !important;
+  border-color: rgba(239, 68, 68, 0.35) !important;
+}
+
+.terminal-send.is-stop:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.26) !important;
+}
+
+.terminal-send.is-stop svg {
+  width: 14px;
+  height: 14px;
+}
+
 .chat-input-area.terminal-input-area .chat-input-wrap {
   display: none;
 }

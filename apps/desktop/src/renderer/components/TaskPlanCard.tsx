@@ -51,17 +51,36 @@ export function extractTurnIssues(events: StreamEvent[]): string[] {
 
   for (const e of events) {
     if (e.type === 'tool_result' && e.metadata?.isError && e.content) {
+      const detail = e.content.replace(/^✗\s*/, '').trim();
+      if (isCliPermissionBlocked(detail)) {
+        issues.push(
+          '工具被 Claude Code 权限拦截（请重启 WeAgent；若仍失败，检查 ~/.claude/settings.json 是否禁用了 bypassPermissions）',
+        );
+        continue;
+      }
       const name = String(e.metadata?.toolName ?? '工具');
-      const detail = e.content.replace(/^✗\s*/, '').trim().slice(0, 160);
-      issues.push(`${name}：${detail}`);
+      issues.push(`${name}：${detail.slice(0, 160)}`);
       continue;
     }
     if (e.type === 'error' && e.content && !e.metadata?.sessionNotFound) {
-      issues.push(e.content.trim().slice(0, 160));
+      const detail = e.content.trim();
+      if (isCliPermissionBlocked(detail)) {
+        issues.push(
+          '工具被 Claude Code 权限拦截（请重启 WeAgent；若仍失败，检查 ~/.claude/settings.json 是否禁用了 bypassPermissions）',
+        );
+        continue;
+      }
+      issues.push(detail.slice(0, 160));
     }
   }
 
   return [...new Set(issues)].slice(0, 6);
+}
+
+function isCliPermissionBlocked(text: string): boolean {
+  return /requires approval|需要审批|permission denied|awaiting approval|don't ask mode|dontAsk|权限系统|permission.?mode/i.test(
+    text,
+  );
 }
 
 const STATUS_ICON: Record<TodoPlanStatus, string> = {
