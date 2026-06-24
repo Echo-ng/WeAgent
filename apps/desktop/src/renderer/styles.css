@@ -1085,14 +1085,19 @@ input:disabled, textarea:disabled {
   align-items: baseline;
   color: var(--accent-bright);
   font-size: 12px;
+  min-width: 0;
+  white-space: nowrap;
+  word-break: normal;
 }
 
 .term-tool-name {
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .term-tool-summary {
   color: var(--text-muted);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1576,6 +1581,11 @@ input:disabled, textarea:disabled {
 
 .terminal-input:disabled {
   opacity: 0.5;
+}
+
+.terminal-input:read-only {
+  opacity: 0.72;
+  cursor: text;
 }
 
 .terminal-send {

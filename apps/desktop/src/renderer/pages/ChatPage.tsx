@@ -147,7 +147,7 @@ interface TurnDisplay {
   text: string;
   error: string;
   tips: string[];
-  tools: Array<{ name: string; summary: string; pending?: boolean }>;
+  tools: Array<{ name: string; summary: string; pending?: boolean; toolUseId?: string }>;
   thinkingPreview: string;
   done: boolean;
 }
@@ -251,21 +251,55 @@ export function ChatPage({
     setMessages,
   } = useMessageThread();
   const [input, setInput] = useState('');
-  const [sending, setSending] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
+  const [sendingConvIds, setSendingConvIds] = useState<Set<string>>(() => new Set());
+  const [stoppingConvIds, setStoppingConvIds] = useState<Set<string>>(() => new Set());
+  const [turnIdsByConv, setTurnIdsByConv] = useState<Record<string, string>>({});
   const [elapsedSec, setElapsedSec] = useState(0);
   const [liveTrace, setLiveTrace] = useState<TraceEntry[]>([]);
   const [initializing, setInitializing] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<SavedImageAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
-  const sendStartedAtRef = useRef(0);
-  const activeSendConvIdRef = useRef<string | null>(null);
-  const currentTurnIdRef = useRef<string | null>(null);
+  const sendingConvIdsRef = useRef(new Set<string>());
+  const stoppingConvIdsRef = useRef(new Set<string>());
+  const sendStartedAtByConvRef = useRef(new Map<string, number>());
+  const seenExternalTurnStartsRef = useRef(new Set<string>());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollModeRef = useRef<ScrollBehavior>('instant');
   const wasVisibleRef = useRef(visible);
+
+  const syncSendingConvIds = () => setSendingConvIds(new Set(sendingConvIdsRef.current));
+  const syncStoppingConvIds = () => setStoppingConvIds(new Set(stoppingConvIdsRef.current));
+
+  const focusInput = () => {
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const markConvSending = (convId: string, startedAt = Date.now()) => {
+    sendingConvIdsRef.current.add(convId);
+    sendStartedAtByConvRef.current.set(convId, startedAt);
+    setTurnIdsByConv((prev) => {
+      if (!(convId in prev)) return prev;
+      const next = { ...prev };
+      delete next[convId];
+      return next;
+    });
+    syncSendingConvIds();
+  };
+
+  const markConvIdle = (convId: string) => {
+    sendingConvIdsRef.current.delete(convId);
+    sendStartedAtByConvRef.current.delete(convId);
+    stoppingConvIdsRef.current.delete(convId);
+    setTurnIdsByConv((prev) => {
+      if (!(convId in prev)) return prev;
+      const next = { ...prev };
+      delete next[convId];
+      return next;
+    });
+    syncSendingConvIds();
+    syncStoppingConvIds();
+  };
 
   const activeConv = conversations.find((c) => c.id === activeId);
   const activeAgent =
@@ -320,8 +354,12 @@ export function ChatPage({
   }, [activeId, loadThread]);
 
   useEffect(() => {
-    if (visible && !wasVisibleRef.current && activeId) {
+    const becameVisible = visible && !wasVisibleRef.current;
+    if (becameVisible && activeId) {
       void loadThread(activeId, { force: true });
+      focusInput();
+    } else if (visible && activeId) {
+      focusInput();
     }
     wasVisibleRef.current = visible;
   }, [visible, activeId, loadThread]);
@@ -344,38 +382,78 @@ export function ChatPage({
     }
   }, [streamEvents, activeId, invalidate, loadThread]);
 
+  const isActiveConvSending = Boolean(activeId && sendingConvIds.has(activeId));
+  const isActiveConvStopping = Boolean(activeId && stoppingConvIds.has(activeId));
+
   useEffect(() => {
-    if (!sending) {
+    for (let i = streamEvents.length - 1; i >= 0; i--) {
+      const e = streamEvents[i];
+      if (!e.conversationId) continue;
+      if (sendingConvIdsRef.current.has(e.conversationId)) continue;
+      if (e.metadata?.kind === 'task_started') {
+        const key = String(e.metadata.runId ?? `${e.conversationId}:${e.timestamp}`);
+        if (seenExternalTurnStartsRef.current.has(key)) continue;
+        seenExternalTurnStartsRef.current.add(key);
+        markConvSending(e.conversationId, e.timestamp);
+      }
+    }
+  }, [streamEvents]);
+
+  useEffect(() => {
+    if (!isActiveConvSending || !activeId) {
       setElapsedSec(0);
       return;
     }
-    const tick = () =>
-      setElapsedSec(Math.floor((Date.now() - sendStartedAtRef.current) / 1000));
+    const startedAt = sendStartedAtByConvRef.current.get(activeId) ?? Date.now();
+    const tick = () => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
     tick();
     const id = window.setInterval(tick, 500);
     return () => window.clearInterval(id);
-  }, [sending]);
+  }, [isActiveConvSending, activeId]);
 
   useEffect(() => {
-    if (!sending) return;
-    const convId = activeSendConvIdRef.current;
-    if (!convId || convId !== activeId) return;
-    const since = sendStartedAtRef.current - 300;
+    if (!activeId || !sendingConvIds.has(activeId)) return;
+    const startedAt = sendStartedAtByConvRef.current.get(activeId);
+    if (!startedAt) return;
+    const since = startedAt - 300;
     for (let i = streamEvents.length - 1; i >= 0; i--) {
       const e = streamEvents[i];
-      if (e.conversationId !== convId || e.timestamp < since) continue;
+      if (e.conversationId !== activeId || e.timestamp < since) continue;
       if (e.metadata?.kind === 'turn_start' && typeof e.metadata.turnId === 'string') {
-        currentTurnIdRef.current = e.metadata.turnId;
-        setCurrentTurnId(e.metadata.turnId);
+        setTurnIdsByConv((prev) =>
+          prev[activeId] === e.metadata!.turnId
+            ? prev
+            : { ...prev, [activeId]: e.metadata!.turnId as string },
+        );
         break;
       }
     }
-  }, [streamEvents, activeId, sending]);
+  }, [streamEvents, activeId, sendingConvIds]);
 
-  const sendingConvId = activeSendConvIdRef.current;
-  const isActiveConvSending = Boolean(
-    sending && sendingConvId && activeId && sendingConvId === activeId,
-  );
+  useEffect(() => {
+    for (const convId of [...sendingConvIdsRef.current]) {
+      const startedAt = sendStartedAtByConvRef.current.get(convId) ?? 0;
+      const perConv = streamEventsByConversation[convId];
+      const events =
+        perConv ??
+        streamEvents.filter((e) => e.conversationId === convId);
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i];
+        // 只检测本轮（发送时间之后）的事件，避免命中上一轮遗留的 done/cancelled
+        if (e.timestamp < startedAt - 300) break;
+        if (
+          e.type === 'done' ||
+          e.metadata?.cancelled ||
+          e.metadata?.kind === 'task_completed' ||
+          e.metadata?.kind === 'task_failed'
+        ) {
+          markConvIdle(convId);
+          if (activeId === convId) focusInput();
+          break;
+        }
+      }
+    }
+  }, [streamEvents, streamEventsByConversation, activeId, sendingConvIds]);
 
   useEffect(() => {
     const convEvents = activeId ? streamEventsByConversation[activeId] ?? [] : [];
@@ -383,17 +461,19 @@ export function ChatPage({
     setLiveTrace(toTraceEntries(traceEvents, activeId));
   }, [streamEvents, streamEventsByConversation, activeId]);
 
-  useEffect(() => {
-    if (activeId) textareaRef.current?.focus();
-  }, [activeId]);
+  const activeTurnId = activeId ? turnIdsByConv[activeId] ?? null : null;
+  const activeSendStartedAt =
+    activeId && isActiveConvSending
+      ? sendStartedAtByConvRef.current.get(activeId) ?? 0
+      : 0;
 
   const turnEvents = collectTurnEvents(
     streamEvents,
     streamEventsByConversation,
     activeId ?? '',
     isActiveConvSending,
-    currentTurnIdRef.current ?? currentTurnId,
-    isActiveConvSending ? sendStartedAtRef.current : 0,
+    activeTurnId,
+    activeSendStartedAt,
   );
 
   const liveTurn = deriveTurnDisplay(turnEvents);
@@ -404,7 +484,7 @@ export function ChatPage({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: scrollModeRef.current });
     scrollModeRef.current = 'smooth';
-  }, [messages, sending, currentTurnId, streamEvents.length, todoPlan.length, activeId, streamEventsByConversation]);
+  }, [messages, isActiveConvSending, activeTurnId, streamEvents.length, todoPlan.length, activeId, streamEventsByConversation]);
 
   const adjustTextareaHeight = () => {
     const el = textareaRef.current;
@@ -430,7 +510,7 @@ export function ChatPage({
     const conv = await window.weagent.createConversation(formatTitle());
     await onRefresh();
     setActiveId(conv.id);
-    setTimeout(() => textareaRef.current?.focus(), 50);
+    setTimeout(focusInput, 50);
   };
 
   const deleteConv = async (id: string, title: string, e?: React.MouseEvent) => {
@@ -444,8 +524,7 @@ export function ChatPage({
       clear();
       setActiveId(null);
       setLiveTrace([]);
-      currentTurnIdRef.current = null;
-      setCurrentTurnId(null);
+      markConvIdle(id);
     }
   };
 
@@ -493,9 +572,10 @@ export function ChatPage({
   };
 
   const stopSending = async () => {
-    const convId = activeSendConvIdRef.current;
-    if (!convId || !sending || stopping) return;
-    setStopping(true);
+    const convId = activeId;
+    if (!convId || !sendingConvIds.has(convId) || stoppingConvIds.has(convId)) return;
+    stoppingConvIdsRef.current.add(convId);
+    syncStoppingConvIds();
     try {
       await window.weagent.cancelConversation(convId);
     } catch (err) {
@@ -512,23 +592,19 @@ export function ChatPage({
         },
       ]);
     } finally {
-      setStopping(false);
+      stoppingConvIdsRef.current.delete(convId);
+      syncStoppingConvIds();
     }
   };
 
   const send = async (textOverride?: string) => {
     const text = (textOverride ?? input).trim();
     const attachments = [...pendingAttachments];
-    if ((!text && attachments.length === 0) || sending) return;
-
     const convId = await ensureConversation();
     if (!convId) return;
+    if ((!text && attachments.length === 0) || sendingConvIds.has(convId)) return;
 
-    currentTurnIdRef.current = null;
-    setCurrentTurnId(null);
-    sendStartedAtRef.current = Date.now();
-    activeSendConvIdRef.current = convId;
-    setSending(true);
+    markConvSending(convId);
     scrollModeRef.current = 'smooth';
     if (!textOverride) {
       setInput('');
@@ -581,12 +657,8 @@ export function ChatPage({
         },
       ]);
     } finally {
-      setSending(false);
-      currentTurnIdRef.current = null;
-      setCurrentTurnId(null);
-      activeSendConvIdRef.current = null;
-      sendStartedAtRef.current = 0;
-      textareaRef.current?.focus();
+      markConvIdle(convId);
+      focusInput();
     }
   };
 
@@ -771,7 +843,15 @@ export function ChatPage({
               Claude Code 或显示 [Unsupported Image]。
             </div>
           )}
-          <div className="terminal-input-row">
+          <div
+            className="terminal-input-row"
+            onMouseDown={(e) => {
+              const target = e.target as HTMLElement;
+              if (target.closest('button') || target.tagName === 'TEXTAREA') return;
+              e.preventDefault();
+              focusInput();
+            }}
+          >
             <span className="term-prompt">&gt;</span>
             <textarea
               ref={textareaRef}
@@ -803,7 +883,8 @@ export function ChatPage({
                   void send();
                 }
               }}
-              disabled={sending || initializing}
+              disabled={initializing}
+              readOnly={isActiveConvSending}
               rows={1}
             />
             <button
@@ -811,8 +892,8 @@ export function ChatPage({
               onClick={() => void (isActiveConvSending ? stopSending() : send())}
               disabled={
                 isActiveConvSending
-                  ? stopping || initializing
-                  : (!input.trim() && pendingAttachments.length === 0) || sending || initializing
+                  ? isActiveConvStopping || initializing
+                  : (!input.trim() && pendingAttachments.length === 0) || initializing
               }
               title={isActiveConvSending ? '停止生成' : '发送'}
             >
@@ -823,8 +904,8 @@ export function ChatPage({
             {isActiveConvSending ? (
               <>
                 <span className="activity-pulse activity-pulse-sm" aria-hidden />
-                {stopping ? '正在停止…' : `正在等待回复 · 已用时 ${elapsedSec}s`}
-                {!stopping && ' · 点击右侧按钮停止'}
+                {isActiveConvStopping ? '正在停止…' : `正在等待回复 · 已用时 ${elapsedSec}s`}
+                {!isActiveConvStopping && ' · 点击右侧按钮停止'}
                 {liveTurn.phase === 'approval' &&
                   activeConv?.channel === 'wechat' &&
                   ' · 敏感工具操作可在「审批队列」处理'}
@@ -1070,7 +1151,7 @@ function deriveTurnDisplay(events: StreamEvent[]): TurnDisplay {
   let hadThinking = false;
   let lastPhase: ActivityPhase = 'starting';
   const tips: string[] = [];
-  const tools: Array<{ name: string; summary: string; pending?: boolean }> = [];
+  const tools: Array<{ name: string; summary: string; pending?: boolean; toolUseId?: string }> = [];
   const pendingApprovals = new Set<string>();
 
   for (const e of events) {
@@ -1108,14 +1189,30 @@ function deriveTurnDisplay(events: StreamEvent[]): TurnDisplay {
         break;
       case 'tool_result': {
         const toolUseId = String(e.metadata?.toolUseId ?? '');
-        if (toolUseId) pendingApprovals.delete(toolUseId);
         const phase = e.metadata?.phase === 'call' ? 'call' : 'result';
         if (phase === 'call') {
-          tools.push({
-            name: String(e.metadata?.toolName ?? 'tool'),
-            summary: summarizeToolEvent(e),
-          });
+          const existing = toolUseId
+            ? tools.find((t) => t.toolUseId === toolUseId)
+            : undefined;
+          if (!existing) {
+            tools.push({
+              name: String(e.metadata?.toolName ?? 'tool'),
+              summary: summarizeToolEvent(e),
+              toolUseId: toolUseId || undefined,
+            });
+          }
           status = `正在调用 ${e.metadata?.toolName ?? '工具'}…`;
+          lastPhase = 'tool';
+        } else {
+          // 工具已执行完成：清除审批等待，并把对应卡片从「审批中」更新为结果
+          if (toolUseId) pendingApprovals.delete(toolUseId);
+          const target = toolUseId
+            ? tools.find((t) => t.toolUseId === toolUseId)
+            : undefined;
+          if (target) {
+            target.pending = false;
+            if (e.content) target.summary = e.content;
+          }
           lastPhase = 'tool';
         }
         break;
@@ -1123,11 +1220,17 @@ function deriveTurnDisplay(events: StreamEvent[]): TurnDisplay {
       case 'approval_required': {
         const toolUseId = String(e.metadata?.toolUseId ?? '');
         if (toolUseId) pendingApprovals.add(toolUseId);
-        tools.push({
-          name: String(e.metadata?.toolName ?? 'tool'),
-          summary: summarizeToolEvent(e),
-          pending: true,
-        });
+        const existing = toolUseId
+          ? tools.find((t) => t.toolUseId === toolUseId)
+          : undefined;
+        if (!existing) {
+          tools.push({
+            name: String(e.metadata?.toolName ?? 'tool'),
+            summary: summarizeToolEvent(e),
+            pending: true,
+            toolUseId: toolUseId || undefined,
+          });
+        }
         status = `等待审批：${e.metadata?.toolName ?? '工具'}`;
         lastPhase = 'approval';
         break;

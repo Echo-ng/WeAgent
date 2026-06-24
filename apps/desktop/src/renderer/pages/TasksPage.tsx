@@ -25,7 +25,7 @@ function formatSyncBanner(result: { imported: number; updated: number; removed: 
   const parts: string[] = [];
   if (result.imported > 0) parts.push(`新导入 ${result.imported} 个`);
   if (result.updated > 0) parts.push(`更新 ${result.updated} 个`);
-  if (result.removed > 0) parts.push(`Claude 已删除 ${result.removed} 个（WeAgent 已停用）`);
+  if (result.removed > 0) parts.push(`Claude 已删除 ${result.removed} 个（WeAgent 已同步删除）`);
   if (result.files.length > 0) {
     parts.push(`扫描 ${result.files.length} 个 Claude 任务文件`);
   } else {
@@ -438,6 +438,8 @@ export function TasksPage({ tasks, agents, settings, conversations, onRefresh, o
                     <input
                       type="checkbox"
                       checked={task.enabled}
+                      disabled={Boolean(task.claudeNativeId)}
+                      title={task.claudeNativeId ? 'Claude 同步任务请在 Claude Code 中启停后同步' : undefined}
                       onChange={() => void toggleEnabled(task)}
                     />
                     <span>{task.enabled ? '已启用' : '已暂停'}</span>
@@ -460,10 +462,20 @@ export function TasksPage({ tasks, agents, settings, conversations, onRefresh, o
                   >
                     {isTaskRunning(task.id) ? '执行中…' : '立即运行'}
                   </button>
-                  <button className="secondary" onClick={() => openEdit(task)}>
+                  <button
+                    className="secondary"
+                    disabled={Boolean(task.claudeNativeId)}
+                    title={task.claudeNativeId ? 'Claude 同步任务请在 Claude Code 中编辑后同步' : undefined}
+                    onClick={() => openEdit(task)}
+                  >
                     编辑
                   </button>
-                  <button className="danger" onClick={() => void remove(task.id)}>
+                  <button
+                    className="danger"
+                    disabled={Boolean(task.claudeNativeId)}
+                    title={task.claudeNativeId ? 'Claude 同步任务请在 Claude Code 中删除后同步' : undefined}
+                    onClick={() => void remove(task.id)}
+                  >
                     删除
                   </button>
                 </div>

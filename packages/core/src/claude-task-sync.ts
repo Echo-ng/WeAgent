@@ -207,25 +207,38 @@ export function syncClaudeScheduledTasks(
   let removed = 0;
 
   const seenNativeByCwd = new Map<string, Set<string>>();
+  const seenNativeIds = new Set<string>();
+  const parseFailedCwds = new Set<string>();
+  let parsedFileCount = 0;
+
+  for (const root of expandSearchDirs(searchDirs)) {
+    const cwdKey = normalize(root);
+    if (!existsSync(scheduledTasksPath(root))) {
+      seenNativeByCwd.set(cwdKey, new Set());
+    }
+  }
 
   for (const filePath of files) {
     const cwd = join(filePath, '..', '..');
     const cwdKey = normalize(cwd);
+    let tasks: ClaudeNativeScheduledTask[];
+    try {
+      tasks = parseClaudeScheduledTasksFile(filePath);
+    } catch {
+      parseFailedCwds.add(cwdKey);
+      continue;
+    }
+    parsedFileCount += 1;
+
     if (!seenNativeByCwd.has(cwdKey)) {
       seenNativeByCwd.set(cwdKey, new Set());
     }
     const seen = seenNativeByCwd.get(cwdKey)!;
 
-    let tasks: ClaudeNativeScheduledTask[];
-    try {
-      tasks = parseClaudeScheduledTasksFile(filePath);
-    } catch {
-      continue;
-    }
-
     for (const native of tasks) {
       if (!native.id || !native.cron || !native.prompt?.trim()) continue;
       seen.add(native.id);
+      seenNativeIds.add(native.id);
 
       const existing = db.getScheduledTaskByClaudeNativeId(native.id);
       const name = deriveTaskName(native.prompt, native.id);
@@ -234,6 +247,7 @@ export function syncClaudeScheduledTasks(
 
       if (
         existing &&
+        existing.enabled === true &&
         existing.cronExpression === cron &&
         existing.prompt === prompt &&
         existing.name === name &&
@@ -247,12 +261,12 @@ export function syncClaudeScheduledTasks(
         {
           id: existing?.id,
           name,
-          enabled: existing?.enabled ?? true,
+          enabled: true,
           scheduleKind: 'cron',
           cronExpression: cron,
           prompt,
           agentId: existing?.agentId ?? native.agentId ?? 'general',
-          cwd: existing?.cwd ?? cwdKey,
+          cwd: cwdKey,
           claudeNativeId: native.id,
           createdAt: native.createdAt,
         },
@@ -265,32 +279,27 @@ export function syncClaudeScheduledTasks(
   }
 
   for (const task of db.listScheduledTasks()) {
-    if (!task.claudeNativeId || !task.cwd?.trim()) continue;
-    const cwdKey = normalize(task.cwd.trim());
-    const seen = seenNativeByCwd.get(cwdKey);
-    if (!seen) continue;
-    if (seen.has(task.claudeNativeId)) continue;
+    if (!task.claudeNativeId) {
+      if (parsedFileCount > 0 && db.deleteScheduledTask(task.id)) {
+        removed += 1;
+      }
+      continue;
+    }
 
-    saveScheduledTaskRecord(
-      db,
-      {
-        id: task.id,
-        name: task.name,
-        enabled: false,
-        scheduleKind: task.scheduleKind,
-        cronExpression: task.cronExpression,
-        dailyTime: task.dailyTime,
-        intervalMs: task.intervalMs,
-        prompt: task.prompt,
-        conversationId: task.conversationId,
-        agentId: task.agentId,
-        cwd: task.cwd,
-        claudeNativeId: task.claudeNativeId,
-        createdAt: task.createdAt,
-      },
-      task,
-    );
-    removed += 1;
+    const cwdKey = task.cwd?.trim() ? normalize(task.cwd.trim()) : null;
+    if (cwdKey && parseFailedCwds.has(cwdKey)) continue;
+    const seen = cwdKey ? seenNativeByCwd.get(cwdKey) : undefined;
+    if (seen?.has(task.claudeNativeId)) continue;
+
+    if (!seen) {
+      // 旧版本导入的 Claude-native 任务可能没有 cwd。此时只能在本轮至少成功解析过
+      // 一个 Claude 任务文件后，用全局 native id 集合作兜底，避免因解析失败误删。
+      if (parsedFileCount === 0 || seenNativeIds.has(task.claudeNativeId)) continue;
+    }
+
+    if (db.deleteScheduledTask(task.id)) {
+      removed += 1;
+    }
   }
 
   return { imported, updated, removed, files };

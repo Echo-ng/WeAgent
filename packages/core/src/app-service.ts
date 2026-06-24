@@ -27,7 +27,6 @@ import { TaskApiServer } from './task-api-server.js';
 import { findScheduledTask, requestScheduledTaskRun, saveScheduledTaskRecord } from './scheduled-task-api.js';
 import {
   ClaudeTaskFileWatcher,
-  removeWeAgentTaskFromClaudeFile,
   syncClaudeScheduledTasks,
   taskToClaudeCron,
   upsertWeAgentTaskInClaudeFile,
@@ -179,6 +178,7 @@ export class AppService {
           kind: 'scheduled_task_updated',
           imported: result.imported,
           updated: result.updated,
+          removed: result.removed,
         },
         timestamp: Date.now(),
       });
@@ -257,36 +257,32 @@ export class AppService {
   }
 
   saveScheduledTask(input: ScheduledTaskInput): ScheduledTask {
+    const existing = input.id ? this.db.getScheduledTask(input.id) : null;
+    if (existing?.claudeNativeId) {
+      return existing;
+    }
     const cwd = input.cwd?.trim() || this.settings.defaultCwd?.trim();
     let task = this.taskScheduler.saveTask({ ...input, cwd: cwd || input.cwd });
-    const taskCwd = task.cwd?.trim() || this.settings.defaultCwd?.trim();
-    if (!task.enabled && task.claudeNativeId && taskCwd) {
-      removeWeAgentTaskFromClaudeFile(taskCwd, task.claudeNativeId);
-    } else {
-      task = this.exportTaskToClaudeFile(task) ?? task;
-    }
+    task = this.exportTaskToClaudeFile(task) ?? task;
     this.restartTaskWatcher();
     return task;
   }
 
   deleteScheduledTask(id: string): boolean {
-    const task = this.db.getScheduledTask(id);
     const ok = this.taskScheduler.deleteTask(id);
-    if (ok && task?.claudeNativeId && task.cwd?.trim()) {
-      removeWeAgentTaskFromClaudeFile(task.cwd.trim(), task.claudeNativeId);
-    }
     if (ok) this.restartTaskWatcher();
     return ok;
   }
 
   setScheduledTaskEnabled(id: string, enabled: boolean): ScheduledTask | null {
+    const existing = this.db.getScheduledTask(id);
+    if (existing?.claudeNativeId) {
+      return existing;
+    }
     const task = this.taskScheduler.setEnabled(id, enabled);
     if (!task) return null;
     if (enabled) {
       return this.exportTaskToClaudeFile(task) ?? task;
-    }
-    if (task.claudeNativeId && task.cwd?.trim()) {
-      removeWeAgentTaskFromClaudeFile(task.cwd.trim(), task.claudeNativeId);
     }
     this.restartTaskWatcher();
     return task;
